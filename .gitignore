@@ -53,3 +53,14 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# stm32 compile file
+*.crf
+*.iex
+*.crf
+*.lnp
+*.dep
+*.sct
+*.htm
+*.axf
+*.dbgconf
