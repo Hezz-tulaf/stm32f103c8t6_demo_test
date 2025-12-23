@@ -1,0 +1,440 @@
+#include "usbd_composite.h"
+#include "usbd_customhid.h"
+#include "usbd_msc.h"
+#include "usart.h"
+
+
+//定义这两个值的原因   https://blog.csdn.net/laifengyuan1/article/details/109624730
+static USBD_CUSTOM_HID_HandleTypeDef *pCustomHIDData;
+static USBD_MSC_BOT_HandleTypeDef *pMSCData;
+
+
+static uint8_t  USBD_Composite_Init (USBD_HandleTypeDef *pdev,
+                                     uint8_t cfgidx);
+
+static uint8_t  USBD_Composite_DeInit (USBD_HandleTypeDef *pdev,
+                                       uint8_t cfgidx);
+
+static uint8_t  USBD_Composite_EP0_RxReady(USBD_HandleTypeDef *pdev);
+
+static uint8_t  USBD_Composite_Setup (USBD_HandleTypeDef *pdev,
+                                      USBD_SetupReqTypedef *req);
+
+static uint8_t  USBD_Composite_DataIn (USBD_HandleTypeDef *pdev,
+                                       uint8_t epnum);
+
+static uint8_t  USBD_Composite_DataOut (USBD_HandleTypeDef *pdev,
+                                        uint8_t epnum);
+
+static uint8_t  *USBD_Composite_GetFSCfgDesc (uint16_t *length);
+
+static uint8_t  *USBD_Composite_GetDeviceQualifierDescriptor (uint16_t *length);
+
+USBD_ClassTypeDef  USBD_COMPOSITE =
+{
+    USBD_Composite_Init,
+    USBD_Composite_DeInit,
+    USBD_Composite_Setup,
+    NULL, /*EP0_TxSent*/
+    USBD_Composite_EP0_RxReady,
+    USBD_Composite_DataIn,
+    USBD_Composite_DataOut,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    USBD_Composite_GetFSCfgDesc,
+    NULL,
+    USBD_Composite_GetDeviceQualifierDescriptor,
+};
+
+
+//复合设备配置描述符  custom_hid+msc
+/* USB composite device Configuration Descriptor */
+/*   All Descriptors (Configuration, Interface, Endpoint, Class, Vendor */
+__ALIGN_BEGIN uint8_t USBD_Composite_CfgFSDesc[USBD_COMPOSITE_DESC_SIZE]  __ALIGN_END =
+{
+    0x09,   /* bLength: Configuation Descriptor size */
+    USB_DESC_TYPE_CONFIGURATION,   /* bDescriptorType: Configuration */
+    WBVAL(USBD_COMPOSITE_DESC_SIZE),//配置描述符的大小
+    USBD_MAX_NUM_INTERFACES,   /* bNumInterfaces: 3个 */
+    0x01,   /* bConfigurationValue: */
+    0x00,   /* iConfiguration: */
+    0xE0,   /* bmAttributes: 自供电 支持远程唤醒*/
+    0xFA,   /* MaxPower 500 mA */
+
+    /************** Descriptor of CUSTOM HID interface（HID接口描述符） ****************/
+    /* 09 */
+    0x09,         /*bLength: Interface Descriptor size*/
+    USB_DESC_TYPE_INTERFACE,/*bDescriptorType: Interface descriptor type*/
+    USBD_KeyBoard_INTERFACE,         /*bInterfaceNumber: Number of Interface  接口编号  从0开始  这个数要改动 */
+    0x00,         /*bAlternateSetting: Alternate setting 备用接口编号*/
+    0x02,         /*bNumEndpoints  该接口所使用的端点数  IN and OUT*/
+    0x03,         /*bInterfaceClass: CUSTOM_HID*/
+    0x01,         /*bInterfaceSubClass : 1=BOOT, 0=no boot*/
+    0x01,         /*nInterfaceProtocol : 0=none, 1=keyboard, 2=mouse*/
+    0,            /*iInterface: Index of string descriptor*/
+    /******************** Descriptor of CUSTOM_HID(HID描述符)*************************/
+    /* 18 */
+    0x09,         /*bLength: CUSTOM_HID Descriptor size*/
+    CUSTOM_HID_DESCRIPTOR_TYPE, /*bDescriptorType: CUSTOM_HID*/
+    0x11,         /*bCUSTOM_HIDUSTOM_HID: CUSTOM_HID Class Spec release number*/
+    0x01,
+    0x00,         /*bCountryCode: Hardware target country*/
+    0x01,         /*bNumDescriptors: Number of CUSTOM_HID class descriptors to follow*/
+    0x22,         /*bDescriptorType*/
+    KEYBOARD_USBD_CUSTOM_HID_REPORT_DESC_SIZE,/*wItemLength: Total length of Report descriptor*/
+    0x00,
+    /******************** Descriptor of Custom HID endpoints （端点描述符）********************/
+    /* 27 */
+    0x07,          /*bLength: Endpoint Descriptor size*/
+    USB_DESC_TYPE_ENDPOINT, /*bDescriptorType:*/
+
+    CUSTOM_HID_EPIN_ADDR,     /*bEndpointAddress: Endpoint Address (IN)*/
+    0x03,          /*bmAttributes: Interrupt endpoint*/
+    CUSTOM_HID_EPIN_SIZE, /*wMaxPacketSize: 2 Byte max */
+    0x00,
+    CUSTOM_HID_FS_BINTERVAL,          /*bInterval: Polling Interval */
+    /* 34 */
+
+    0x07,          /* bLength: Endpoint Descriptor size */
+    USB_DESC_TYPE_ENDPOINT, /* bDescriptorType: */
+    CUSTOM_HID_EPOUT_ADDR,  /*bEndpointAddress: Endpoint Address (OUT)*/
+    0x03, /* bmAttributes: Interrupt endpoint */
+    CUSTOM_HID_EPOUT_SIZE,  /* wMaxPacketSize: 2 Bytes max  */
+    0x00,
+    CUSTOM_HID_FS_BINTERVAL,  /* bInterval: Polling Interval */
+    /* 41 */
+
+
+    /************** Descriptor of CUSTOM HID interface ****************/
+
+    0x09,         /*bLength: Interface Descriptor size*/
+    USB_DESC_TYPE_INTERFACE,/*bDescriptorType: Interface descriptor type*/
+    USBD_Mouse_INTERFACE,         /*bInterfaceNumber: Number of Interface*/
+    0x00,         /*bAlternateSetting: Alternate setting*/
+    0x02,         /*bNumEndpoints*/
+    0x03,         /*bInterfaceClass: CUSTOM_HID*/
+    0x01,         /*bInterfaceSubClass : 1=BOOT, 0=no boot*/
+    0x02,         /*nInterfaceProtocol : 0=none, 1=keyboard, 2=mouse*/
+    0,            /*iInterface: Index of string descriptor*/
+
+    /* 50 */
+    /******************** Descriptor of CUSTOM_HID *************************/
+
+    0x09,         /*bLength: CUSTOM_HID Descriptor size*/
+    CUSTOM_HID_DESCRIPTOR_TYPE, /*bDescriptorType: CUSTOM_HID*/
+    0x11,         /*bCUSTOM_HIDUSTOM_HID: CUSTOM_HID Class Spec release number*/
+    0x01,
+    0x00,         /*bCountryCode: Hardware target country*/
+    0x01,         /*bNumDescriptors: Number of CUSTOM_HID class descriptors to follow*/
+    0x22,         /*bDescriptorType*/
+    MOUSE_CUSTOM_HID_REPORT_DESC_SIZE,/*wItemLength: Total length of Report descriptor*/
+    0x00,
+    /* 59 */
+    /******************** Descriptor of Custom HID endpoints ********************/
+
+    0x07,          /*bLength: Endpoint Descriptor size*/
+    USB_DESC_TYPE_ENDPOINT, /*bDescriptorType:*/
+
+    CUSTOM_HID_EP2IN_ADDR,     /*bEndpointAddress: Endpoint Address (IN)*/
+    0x03,          /*bmAttributes: Interrupt endpoint*/
+    CUSTOM_HID_EPIN_SIZE, /*wMaxPacketSize: 2 Byte max */
+    0x00,
+    CUSTOM_HID_FS_BINTERVAL,          /*bInterval: Polling Interval */
+
+    /* 66 */
+
+    0x07,          /* bLength: Endpoint Descriptor size */
+    USB_DESC_TYPE_ENDPOINT, /* bDescriptorType: */
+    CUSTOM_HID_EP2OUT_ADDR,  /*bEndpointAddress: Endpoint Address (OUT)*/
+    0x03, /* bmAttributes: Interrupt endpoint */
+    CUSTOM_HID_EPOUT_SIZE,  /* wMaxPacketSize: 2 Bytes max  */
+    0x00,
+    CUSTOM_HID_FS_BINTERVAL, /* bInterval: Polling Interval */
+    /* 73 */
+
+
+/****************************MSC************************************/
+
+    /********************  Mass Storage interface ********************/
+    0x09,   /* bLength: Interface Descriptor size */
+    USB_DESC_TYPE_INTERFACE,   /* bDescriptorType: */
+    USBD_MSC_INTERFACE,   /* bInterfaceNumber: Number of Interface  数字2 第三个接口*/
+    0x00,   /* bAlternateSetting: Alternate setting */
+    0x02,   /* bNumEndpoints*/
+    0x08,   /* bInterfaceClass: MSC Class */
+    0x06,   /* bInterfaceSubClass : SCSI transparent*/
+    0x50,   /* nInterfaceProtocol */
+    0x00,          /* iInterface: 字符串索引值  统一为0 可有可无的角色*/
+
+    /*82*/
+
+    /********************  Mass Storage Endpoints ********************/
+    0x07,   /*Endpoint descriptor length = 7*/
+    0x05,   /*Endpoint descriptor type */
+    MSC_EPIN_ADDR,   /*Endpoint address (IN, address 1) */
+    0x02,   /*Bulk endpoint type */
+    LOBYTE(MSC_MAX_FS_PACKET),
+    HIBYTE(MSC_MAX_FS_PACKET),
+    0x00,   /*Polling interval in milliseconds */
+
+    /*89*/
+
+    0x07,   /*Endpoint descriptor length = 7 */
+    0x05,   /*Endpoint descriptor type */
+    MSC_EPOUT_ADDR,   /*Endpoint address (OUT, address 1) */
+    0x02,   /*Bulk endpoint type */
+    LOBYTE(MSC_MAX_FS_PACKET),
+    HIBYTE(MSC_MAX_FS_PACKET),
+    0x00 /*Polling interval in milliseconds*/
+
+    /*96*/
+
+};
+
+
+/* USB Standard Device Descriptor */
+__ALIGN_BEGIN  uint8_t USBD_Composite_DeviceQualifierDesc[USB_LEN_DEV_QUALIFIER_DESC]  __ALIGN_END =
+{
+    USB_LEN_DEV_QUALIFIER_DESC,
+    USB_DESC_TYPE_DEVICE_QUALIFIER,
+    0x00,
+    0x02,
+    0x00,
+    0x00,
+    0x00,
+    MSC_MAX_FS_PACKET,
+    0x01,
+    0x00,
+};
+
+
+/**
+  * @brief  USBD_Composite_Init
+  *         Initialize the Composite interface
+  * @param  pdev: device instance
+  * @param  cfgidx: Configuration index
+  * @retval status
+  */
+static uint8_t  USBD_Composite_Init (USBD_HandleTypeDef *pdev,
+                                     uint8_t cfgidx)
+{
+    uint8_t res = 0;
+
+    pdev->pUserData =  &USBD_CustomHID_fops_FS;
+    res +=  USBD_CUSTOM_HID.Init(pdev,cfgidx);
+    pCustomHIDData = pdev->pClassData;//指向一个全局变量  
+
+    pdev->pUserData = &USBD_Storage_Interface_fops_FS;
+    res +=  USBD_MSC.Init(pdev,cfgidx);
+    pMSCData = pdev->pClassData;
+
+   
+    return res;
+}
+
+/**
+  * @brief  USBD_Composite_DeInit
+  *         DeInitilaize  the Composite configuration
+  * @param  pdev: device instance
+  * @param  cfgidx: configuration index
+  * @retval status
+  */
+static uint8_t  USBD_Composite_DeInit (USBD_HandleTypeDef *pdev,
+                                       uint8_t cfgidx)
+{
+    uint8_t res = 0;
+    pdev->pClassData = pCustomHIDData;
+    pdev->pUserData = &USBD_CustomHID_fops_FS;
+    res +=  USBD_CUSTOM_HID.DeInit(pdev,cfgidx);
+
+    pdev->pClassData = pMSCData;
+    pdev->pUserData = &USBD_Storage_Interface_fops_FS;
+    res +=  USBD_MSC.DeInit(pdev,cfgidx);
+
+    return res;
+}
+
+
+static uint8_t  USBD_Composite_EP0_RxReady(USBD_HandleTypeDef *pdev)
+{
+    return USBD_CUSTOM_HID.EP0_RxReady(pdev);
+}
+
+
+
+/**
+* @brief  USBD_Composite_Setup
+*         Handle the Composite requests
+* @param  pdev: device instance
+* @param  req: USB request
+* @retval status
+*/
+static uint8_t  USBD_Composite_Setup (USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
+{
+//    printf("req->bmRequest & USB_REQ_RECIPIENT_MASK:0x%x\r\n",req->bmRequest& USB_REQ_RECIPIENT_MASK);
+//    printf("req->wIndex:0x%x\r\n",req->wIndex);
+    switch (req->bmRequest & USB_REQ_RECIPIENT_MASK)//USB_REQ_RECIPIENT_MASK（0x03）
+    {
+
+    case USB_REQ_RECIPIENT_INTERFACE://接口请求0x01
+        switch(req->wIndex)
+        {
+
+        case USBD_KeyBoard_INTERFACE: ;//键盘接口  index=0
+        case USBD_Mouse_INTERFACE://鼠标接口  index=1
+
+            pdev->pClassData = pCustomHIDData;
+            pdev->pUserData =  &USBD_CustomHID_fops_FS;
+            return(USBD_CUSTOM_HID.Setup(pdev, req));
+
+        case USBD_MSC_INTERFACE://MSC接口
+
+            pdev->pClassData = pMSCData;
+            pdev->pUserData =  &USBD_Storage_Interface_fops_FS;
+            return(USBD_MSC.Setup (pdev, req));
+
+        default:
+            break;
+        }
+        break;
+
+    case USB_REQ_RECIPIENT_ENDPOINT://端口请求0x02
+        switch(req->wIndex)
+        {
+
+        case CUSTOM_HID_EPIN_ADDR://Custom_HID的端点地址
+        case CUSTOM_HID_EPOUT_ADDR:
+        case CUSTOM_HID_EP2IN_ADDR:
+        case CUSTOM_HID_EP2OUT_ADDR:
+            pdev->pClassData = pCustomHIDData;
+            pdev->pUserData =  &USBD_CustomHID_fops_FS;
+            return(USBD_CUSTOM_HID.Setup(pdev, req));
+
+        case MSC_EPIN_ADDR://MSC的端点地址
+        case MSC_EPOUT_ADDR:
+            pdev->pClassData = pMSCData;
+            pdev->pUserData =  &USBD_Storage_Interface_fops_FS;
+            return(USBD_MSC.Setup (pdev, req));
+
+        default:
+            break;
+        }
+        break;
+    }
+
+
+    return USBD_OK;
+}
+
+
+
+
+/**
+* @brief  USBD_Composite_DataIn
+*         handle data IN Stage
+* @param  pdev: device instance
+* @param  epnum: endpoint index
+* @retval status
+*/
+
+
+
+
+uint8_t  USBD_Composite_DataIn (USBD_HandleTypeDef *pdev,
+                                uint8_t epnum)
+{
+   
+    switch(epnum)
+    {
+    case CustomHID_KeyBoard_INDATA_NUM:
+    case CustomHID_Mouse_INDATA_NUM:
+        pdev->pClassData = pCustomHIDData;
+        pdev->pUserData =  &USBD_CustomHID_fops_FS;
+        return(USBD_CUSTOM_HID.DataIn(pdev,epnum));
+
+    case MSC_INDATA_NUM:
+        pdev->pClassData = pMSCData;
+        pdev->pUserData =  &USBD_Storage_Interface_fops_FS;
+        return(USBD_MSC.DataIn(pdev,epnum));
+
+    default:
+        break;
+
+    }
+    return USBD_OK;
+}
+
+
+/**
+* @brief  USBD_Composite_DataOut
+*         handle data OUT Stage
+* @param  pdev: device instance
+* @param  epnum: endpoint index
+* @retval status
+*/
+uint8_t  USBD_Composite_DataOut (USBD_HandleTypeDef *pdev,
+                                 uint8_t epnum)
+{
+  
+    switch(epnum)
+    {
+    case CustomHID_KeyBoard_OUTDATA_NUM:
+    case CustomHID_Mouse_OUTDATA_NUM:
+        pdev->pClassData = pCustomHIDData;
+        pdev->pUserData =  &USBD_CustomHID_fops_FS;
+        return(USBD_CUSTOM_HID.DataOut(pdev,epnum));
+
+    case MSC_OUTDATA_NUM:
+        pdev->pClassData = pMSCData;
+        pdev->pUserData =  &USBD_Storage_Interface_fops_FS;
+        return(USBD_MSC.DataOut(pdev,epnum));
+
+    default:
+        break;
+
+    }
+    return USBD_OK;
+}
+
+
+
+/**
+* @brief  USBD_Composite_GetHSCfgDesc
+*         return configuration descriptor
+* @param  length : pointer data length
+* @retval pointer to descriptor buffer
+*/
+uint8_t  *USBD_Composite_GetFSCfgDesc (uint16_t *length)
+{
+    *length = sizeof (USBD_Composite_CfgFSDesc);
+    return USBD_Composite_CfgFSDesc;
+}
+
+/**
+* @brief  DeviceQualifierDescriptor
+*         return Device Qualifier descriptor
+* @param  length : pointer data length
+* @retval pointer to descriptor buffer
+*/
+uint8_t  *USBD_Composite_GetDeviceQualifierDescriptor (uint16_t *length)
+{
+    *length = sizeof (USBD_Composite_DeviceQualifierDesc);
+    return USBD_Composite_DeviceQualifierDesc;
+}
+
+
+/**
+  * @}
+  */
+
+
+/**
+  * @}
+  */
+
+
+/**
+  * @}
+  */

@@ -1,0 +1,104 @@
+#include "fifo.h"
+#include "stdlib.h"
+
+struct FIFOTypeDef USART1_fifo;
+struct FIFOTypeDef USART2_fifo;
+/*******************************************************************************
+* Function Name : FIFO_Init
+* Description   : 初始化FIFO
+* Input         : FIFOTypeDef结构体，FIFO
+* Output        : None
+* Return        : None
+*******************************************************************************/
+void FIFO_Init(struct FIFOTypeDef *FIFO)
+{
+    FIFO->Read  = 0;
+    FIFO->Write = 0;
+    memset(FIFO->Buf, 0, sizeof(FIFO->Buf));
+}
+
+/*******************************************************************************
+* Function Name : U1_PutChar
+* Description   : put a fifo value into fifo buffer
+* Input         : c
+* Output        : None
+* Return        : None
+*******************************************************************************/
+void U1_PutChar(uint8_t c)
+{
+  USART1_fifo.Buf[USART1_fifo.Write] = c;  //写入数据到缓冲区
+  
+  if(++USART1_fifo.Write >= FIFO_SIZE)	   //写入指针超出缓冲区最大值，返回最初位置
+  {
+    USART1_fifo.Write = 0;
+  }
+}
+
+/*******************************************************************************
+* Function Name  : U1_GetChar
+* Description    : read fifo value from fifo buffer with timeout feature
+* Input          : c
+* Output         : None
+* Return         : 0 
+*******************************************************************************/
+uint8_t U1_GetChar(uint8_t *c)
+{
+  if(USART1_fifo.Read == USART1_fifo.Write)	  //如果没有存入数据，则返回0
+  {
+    return 0;
+  }
+  else
+  {
+    *c = USART1_fifo.Buf[USART1_fifo.Read];	 //读取数据，传入到指针c
+    
+    if (++USART1_fifo.Read >= FIFO_SIZE)	 //读取指针超出缓冲区最大值，返回最初位置
+    {
+      USART1_fifo.Read = 0;
+    }
+    return 1;								 //成功读取数据返回1
+  }
+}
+
+/*******************************************************************************
+* Function Name : U2_PutChar
+* Description   : put a fifo value into fifo buffer
+* Input         : c
+* Output        : None
+* Return        : None
+*******************************************************************************/
+void U2_PutChar(uint8_t c)
+{
+  USART2_fifo.Buf[USART2_fifo.Write] = c;
+  
+  if(++USART2_fifo.Write >= FIFO_SIZE)
+  {
+    USART2_fifo.Write = 0;
+  }
+}
+
+/*******************************************************************************
+* Function Name  : U2_GetChar
+* Description    : read fifo value from fifo buffer with timeout feature
+* Input          : c
+* Output         : None
+* Return         : 0 
+*******************************************************************************/
+uint8_t U2_GetChar(uint8_t *c)
+{
+
+	if(USART2_fifo.Read == USART2_fifo.Write)
+	{
+	return 0;
+	}
+	else
+  {
+    *c = USART2_fifo.Buf[USART2_fifo.Read];
+    
+    if (++USART2_fifo.Read >= FIFO_SIZE)
+    {
+      USART2_fifo.Read = 0;
+    }
+	
+    return 1;
+  }
+}

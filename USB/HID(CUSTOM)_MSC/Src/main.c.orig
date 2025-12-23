@@ -1,0 +1,1070 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * <h2><center>&copy; Copyright (c) 2019 STMicroelectronics.
+  * All rights reserved.</center></h2>
+  *
+  * This software component is licensed by ST under Ultimate Liberty license
+  * SLA0044, the "License"; You may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at:
+  *                             www.st.com/SLA0044
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "usb_device.h"
+#include "gpio.h"
+#include "usbd_customhid.h"
+
+#include "usart.h"
+#include "sys.h"
+#include "delay.h"
+
+#include "stmflash.h"
+#include "fifo.h"
+
+#include "stdio.h"
+
+#include "encryption.h"
+
+
+//#define IWDG_ON  //时候开启看门狗 注释即关闭
+
+char mouse_flag=0;
+char keyboard_flag=0;
+
+void SystemClock_Config(void);
+/* USER CODE BEGIN PFP */
+
+TIM_HandleTypeDef htim1;
+static void MX_TIM1_Init(void);
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+
+
+//上电发送信息数组定义
+
+u8 mode_init = 0;
+u8 buff[10] = {0};
+u8 port_buff[1];
+
+u8 SENT_In[103] = {0};  //总数组
+u8 D_Name_TX[33]= {0};      //设备名称
+u8 D_data_TX[33]= {0};      //附加信息
+
+u8 Y_ED[6]= { 0x31,0x2E,0x30,0x2E,0x30,0x00 };  //硬件版本  1.0.0
+u8 G_ED[6]= { 0x31,0x2E,0x31,0x2E,0x30,0x00 };  //固件版本  1.1.0；兼容IBM服务器，改为相对模式绝对模式可选择
+
+u8 temp[12];
+u32 temp0,temp1,temp2;   //序列号
+
+//接收数组
+u8 D_Name_RX[76]= {0};
+u8 D_data_RX[76]= {0};
+//写入Flash数组
+u8 Flash_InitBuffer[66]= {0x43, 0x49, 0x4D, 0x32, 0x2E, 0x31, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x00, 0x00, 0x37, 0x31, 0x37, 0x2D, 0x4C, 0x4B, 0x00,
+                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+u8 Flash_Buffer[66]= {0};  
+
+#define FLASH_SIZE sizeof(Flash_Buffer)	 	//数组长度
+#define FLASH_SAVE_ADDR  ((uint32_t)0X800F000)//0x0800F000(ch32的官方地址)   0X801FF00 	//设置FLASH 保存地址(必须为偶数，且其值要大于本代码所占用FLASH的大小+0X08000000)
+#define	FLASH_FLAG_ADDR  ((uint32_t)0X800E000)//0x0800F000(ch32的官方地址)  0X801FFF0
+// STM32F1C8T6  Flash可读写范围  0x8010000~0x801FFFF
+//------------------------------------------------------------------------------------
+
+/*******************************************************************************
+* Function Name : IWDG_Init
+* Description   : 初始化独立看门狗
+* Input         : prer:分频数:IWDG_PRESCALER_4~IWDG_PRESCALER_256
+*									rlr: 自动重装载值,0~0XFFF.
+*									时间计算(大概):Tout=((4*2^prer)*rlr)/32 (ms).
+* Return        : None
+*******************************************************************************/
+IWDG_HandleTypeDef IWDG_Handler; //独立看门狗句柄
+
+void IWDG_Init(u8 prer,u16 rlr)
+{
+    IWDG_Handler.Instance=IWDG;
+    IWDG_Handler.Init.Prescaler=prer;	//设置IWDG分频系数
+    IWDG_Handler.Init.Reload=rlr;		//重装载值
+    HAL_IWDG_Init(&IWDG_Handler);		//初始化IWDG,默认会开启独立看门狗
+}
+//喂独立看门狗
+void IWDG_Feed(void)
+{
+    HAL_IWDG_Refresh(&IWDG_Handler); 	//喂狗
+}
+
+/*
+鼠标发送给PC的数据每次4个字节
+BYTE1 BYTE2 BYTE3 BYTE4
+定义分别是：
+BYTE1 --
+       |--bit7:   1   表示   Y   坐标的变化量超出－256   ~   255的范围,0表示没有溢出
+       |--bit6:   1   表示   X   坐标的变化量超出－256   ~   255的范围，0表示没有溢出
+       |--bit5:   Y   坐标变化的符号位，1表示负数，即鼠标向下移动
+       |--bit4:   X   坐标变化的符号位，1表示负数，即鼠标向左移动
+       |--bit3:     恒为1
+       |--bit2:     1表示中键按下
+       |--bit1:     1表示右键按下
+       |--bit0:     1表示左键按下
+BYTE2 -- X坐标变化量，与byte的bit4组成9位符号数,负数表示向左移，正数表右移。用补码表示变化量
+BYTE3 -- Y坐标变化量，与byte的bit5组成9位符号数，负数表示向上移，正数表下移。用补码表示变化量
+BYTE4 -- 滚轮变化。
+
+BYTE1高5位是可以不用关注的，一般这5bit 在HID描述符中都是作为填充位使用，置0即可。
+
+
+屏幕 横轴为x,纵轴为y 左上角为（0,0）
+
+*/
+extern USBD_HandleTypeDef hUsbDeviceFS;
+
+
+
+
+
+//相对坐标报告
+void rel_mouse_reset() //x为左右   y为上下
+{
+    uint8_t buf[5] = {0x01,0,0,0,0};//0x02为鼠标标志符 不可更改
+    USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 5,2);
+    
+//    while(USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 5,2)!= USBD_OK);
+// HAL_Delay(10);
+}
+
+void rel_mouse_send(uint8_t action,int8_t x, int8_t y,int8_t delta) //x为左右   y为上下
+{
+     uint8_t buf[5] = {0x01,action,x,y,delta};
+     
+     USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 5,2);  
+	 
+     
+//    HAL_Delay(20);
+//    rel_mouse_reset();//必须发送一个全0的数据包 表示弹起   。。。。。。。。。。太垃圾了
+//    HAL_Delay(20);
+
+}
+
+//绝对坐标报告
+void abs_mouse_reset() //x为左右   y为上下
+{
+    uint8_t buf[7] = {0x02,0,0,0,0,0,0};//0x02为报告ID   在设备描述符可更改
+    USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 7,2);  
+}
+
+
+
+void abs_mouse_send(uint8_t action,int16_t x,int16_t y,uint8_t delta) //
+{
+    /*
+    0x02: 为鼠标报告ID   在报告描述符中可更改
+    action： 为鼠标动作
+    delta：滚轮的步进量  QT中滚轮转动一个格子 15° 返回数值120  HID中 滚轮步进量范围为-127~127  往下为负  往上为正
+    x或y:X  Y的绝对坐标   低八位    高八位  0~32767
+    
+    报告数组组成：报告ID(0X02,一个字节)+按键（低三位有效，高五位已经在报告描述符中屏蔽，填充0，一个字节）+滚轮步进量（一个字节）+X(两个字节)+Y(两个字节)=7个字节
+    */
+    uint8_t buf[7] = {0x02,action,x%256,x/256,y%256,y/256,delta};
+    USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 7,2); 
+    
+//    //连接海思板的时候下面弹起语句屏蔽  因为海思板会发送弹起命令
+//    HAL_Delay(20);
+//    abs_mouse_reset();//必须发送一个全0的数据包 表示弹起   。。。。。。。。。。太垃圾了
+//    HAL_Delay(20);
+
+}
+
+void keyboard_reset()
+{
+    uint8_t buf[8] = {0,0,0,0,0,0,0,0};
+    while(USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 8,1) != USBD_OK);
+   
+}
+
+/*
+USB键盘数据包含8个字节
+BYTE1 -- 特殊按键 |--bit0: Left Control是否按下，按下为1
+|--bit1: Left Shift 是否按下，按下为1
+|--bit2: Left Alt 是否按下，按下为1
+|--bit3: Left GUI（Windows键） 是否按下，按下为1
+|--bit4: Right Control是否按下，按下为1
+|--bit5: Right Shift 是否按下，按下为1
+|--bit6: Right Alt 是否按下，按下为1
+|--bit7: Right GUI 是否按下，按下为1
+BYTE2 -- 好像必须为0，反正0没错
+
+BYTE3-BYTE8 当前按下的普通按键键值，也就是最多六个按键
+
+*/
+
+void keyboard_send(int8_t key_sp,int8_t key1,int8_t key2,int8_t key3,int8_t key4,int8_t key5,int8_t key6) //  RX_HID[1]~RX_HID[9]
+{
+    uint8_t buf[8] = {key_sp,0,key1,key2,key3,key4,key5,key6};//0x01为键盘标志符 不可更改   ;0x01,0, 0, RX_HID[2],0,0,0,0,0
+    
+    while(USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, buf, 8, 1)!= USBD_OK);
+    
+    HAL_Delay(10);  //延时是必要的
+    keyboard_reset(); //发送0  表示键盘弹起 否则一直相应之前的键值
+    HAL_Delay(10);
+}
+
+/*
+
+1 鼠标移动
+2 左键按下
+3 左键弹起
+4 右键按下
+5 右键弹起
+6 滚轮
+7 双击
+
+8 键盘按下
+9 键盘弹起
+*/
+u8 RX_HID[10];
+
+void DataParse()
+{
+    u16 x=0;
+    u16 y=0;
+    
+   
+
+    if(RX_HID[0]==0x01) //首位值为 0x01 鼠标事件
+    {
+        if(RX_HID[1]==0x01)//鼠标绝对坐标模式
+        {
+            x=(RX_HID[3]<<8)|RX_HID[4];
+            y=(RX_HID[5]<<8)|RX_HID[6];
+
+//            x=(float)x*23.98755;//17=32767/1366   参数需要根据分辨率设置   此分辨率最大值：05 50 03 00
+//            y=(float)y*42.66536;//30=32767/768
+            
+            
+            //    x=(float) *17.066146;//17=32767/1920
+            //    y=(float)y*30.339815;//30=32767/1080
+
+
+            if(x>=32767) //绝对坐标系下 X Y最大值为32767
+            {
+                x=32767;
+            }
+
+            if(y>=32767)
+            {
+                y=32767;
+            }
+
+           abs_mouse_send(RX_HID[2]&0x07,(int)x,(int)y,RX_HID[7]);  //RX_HID[2]&0x07 保留低三位            
+        }
+        else if(RX_HID[1]==0x02)//鼠标相对坐标模式
+        {
+            
+             rel_mouse_send(RX_HID[2]&0x07,RX_HID[4],RX_HID[6],RX_HID[7]); 
+            
+          //待写
+
+//           int rel_x=(RX_HID[3]<<8)|RX_HID[4];
+//           int rel_y=(RX_HID[5]<<8)|RX_HID[6];  
+
+          /*
+            分几种情况
+            一、都大于127
+            二、都小于-128
+            
+            三、X（-128~127）  Y>127
+            四、X（-128~127）  Y（-128~127）//合并 放在第一 因为这种情况最常见
+            五、X（-128~127）  Y<-128
+            
+            六、X>127          Y（-128~127）
+            七、X（-128~127）  Y（-128~127）//合并
+            八、X<-128         Y（-128~127）
+            
+            */            
+//           if((rel_x>=-128&&rel_x<=127)&&(rel_y>=-128&&rel_y<=127))
+//           {
+//             rel_mouse_send(RX_HID[2]&0x07,RX_HID[4],RX_HID[6],RX_HID[7]);   
+//           }
+//           
+//           else if(rel_x>127&&rel_y>127)//都大于127
+//           {
+//               rel_mouse_send(RX_HID[2]&0x07,127,127,RX_HID[7]);   
+//           }
+//           else if(rel_x<-128&&rel_y<-128)//都小于128
+//           {
+//              rel_mouse_send(RX_HID[2]&0x07,-128,-128,RX_HID[7]);  
+//           }
+//           
+//           else if((rel_x>=-128&&rel_x<=127)&&rel_y>127)//X在范围内  Y大于127
+//           {
+//              rel_mouse_send(RX_HID[2]&0x07,RX_HID[4],127,RX_HID[7]);  
+//           }
+//           else if((rel_x>=-128&&rel_x<=127)&&rel_y<-128)//X在范围内  Y小于128
+//           {
+//              rel_mouse_send(RX_HID[2]&0x07,RX_HID[4],-128,RX_HID[7]);  
+//           }
+//           
+//           else if(rel_x>127&&(rel_y>=-128&&rel_y<=127))//  X大于127 Y在范围内
+//           {
+//              rel_mouse_send(RX_HID[2]&0x07,127,RX_HID[6],RX_HID[7]);  
+//           }
+//           else if(rel_x<-128&&(rel_y>=-128&&rel_y<=127))//  X小于128 Y在范围内
+//           {
+//              rel_mouse_send(RX_HID[2]&0x07,-128,RX_HID[6],RX_HID[7]);  
+//           }
+            
+        }
+
+        
+
+
+
+
+//        switch(RX_HID[0])
+//        {
+//        case 0x01:
+
+//            mouse_send(0x00,(int)x,(int)y,0);
+
+////            x_delta=x-last_x;
+////            y_delta=y-last_y;
+
+////            if(x_delta>127)
+////            {
+////                x_delta=126;
+////            }
+////            else if(x_delta<-127)
+////            {
+////                x_delta=-126;
+////            }
+
+////            if(y_delta>127)
+////            {
+////                y_delta=126;
+////            }
+////            else if(y_delta<-127)
+////            {
+////                y_delta=-126;
+////            }
+
+////        if(x_delta>0)
+////        {
+////            x_div=x_delta/127; //得到除数
+////            x_rem=x_delta%127;//得到余数
+////
+////            for(int i=0;i<x_div;i++)
+////            {
+////                mouse_send(0x00,127,0,0);
+////            }
+////             mouse_send(0x00,x_rem,0,0);
+////
+////        }
+////        else
+////        {
+////           x_div=x_delta/127; //得到除数
+////            x_rem=x_delta%127;//得到余数
+////
+////             for(int i=0;i<(-x_div);i++)
+////            {
+////                mouse_send(0x00,-127,0,0);
+////            }
+////             mouse_send(0x00,x_rem,0,0);
+////        }
+////
+////        if(y_delta>0)
+////        {
+////            y_div=y_delta/127; //得到除数
+////            y_rem=y_delta%127;//得到余数
+////
+////            for(int i=0;i<y_div;i++)
+////            {
+////                mouse_send(0x00,0,127,0);
+////            }
+////             mouse_send(0x00,0,y_rem,0);
+////
+////        }
+////        else
+////        {
+////            y_div=y_delta/127; //得到除数
+////            y_rem=y_delta%127;//得到余数
+////
+////            for(int i=0;i<(-y_div);i++)
+////            {
+////                mouse_send(0x00,0,-127,0);
+////            }
+////             mouse_send(0x00,0,y_rem,0);
+////        }
+
+////            mouse_send(0x00,x_delta,y_delta,0);
+//            //记录上次坐标
+////            last_x=x;
+////            last_y=y;
+//            break;
+//        case 0x02:
+//            mouse_send(0x01,(int)x,(int)y,0);
+//            break;
+//        case 0x03:
+//            mouse_send(0x00,(int)x,(int)y,0);
+//            break;
+//        case 0x04:
+//            mouse_send(0x02,(int)x,(int)y,0);
+//            break;
+//        case 0x05:
+//            mouse_send(0x00,(int)x,(int)y,0);
+//            break;
+//        case 0x06:
+//            break;
+//        case 0x07:
+//            break;
+//        }
+
+
+    }
+    else  if(RX_HID[0]==0x08)  //8和9 键盘
+    {
+        keyboard_send(RX_HID[1],RX_HID[2],RX_HID[3],RX_HID[4],RX_HID[5],RX_HID[6],RX_HID[7]);//发送给电脑
+    }
+    else  if(RX_HID[0]==0x09)  //8和9 键盘
+    {
+
+        keyboard_reset();
+    }
+
+}
+
+/*******************************************************************************
+* Function Name : Get_SerialNum
+* Description   : 获取STM32序列号
+* Input         : None
+* Return        : None
+*******************************************************************************/
+void Get_SerialNum(void)
+{
+    temp0=*(__IO u32*)(0x1FFFF7E8);    //产品唯一身份标识寄存器（96位）
+    temp1=*(__IO u32*)(0x1FFFF7EC);
+    temp2=*(__IO u32*)(0x1FFFF7F0);
+
+    temp[0] = (u8)(temp0 & 0x000000FF);
+    temp[1] = (u8)((temp0 & 0x0000FF00)>>8);
+    temp[2] = (u8)((temp0 & 0x00FF0000)>>16);
+    temp[3] = (u8)((temp0 & 0xFF000000)>>24);
+
+    temp[4] = (u8)(temp1 & 0x000000FF);
+    temp[5] = (u8)((temp1 & 0x0000FF00)>>8);
+    temp[6] = (u8)((temp1 & 0x00FF0000)>>16);
+    temp[7] = (u8)((temp1 & 0xFF000000)>>24);
+
+    temp[8] = (u8)(temp2 & 0x000000FF);
+    temp[9] = (u8)((temp2 & 0x0000FF00)>>8);
+    temp[10] = (u8)((temp2 & 0x00FF0000)>>16);
+    temp[11] = (u8)((temp2 & 0xFF000000)>>24);
+}
+
+
+//void text_writeflash(void)
+//{
+//    u8 buff[10];
+//	  u8 i=0,j=0,m=0;
+//    m=uart1_RX_fifo.count;
+//    if(9<m)//缓存数大于74个字节
+//    {
+//			QRXOut(&uart1_RX_fifo,&buff[0]);
+//			QRXOut(&uart1_RX_fifo,&buff[1]);
+//      if(buff[0]==0x07 && buff[1]==0x14 )
+//        {
+//            i=2;
+//            for(j=0; j<8; j++)
+//            {
+//                QRXOut(&uart1_RX_fifo,&buff[i]);  //   buff[2]~[9]
+//                i++;
+//            }
+//        if(buff[8]==0x11 && buff[9]==0x30 )
+//        {
+//
+//     	   u8 test[66] = {0x41, 0x44, 0x30, 0x30, 0x31, 0x2D, 0x32, 0x39, 0x35, 0x38,
+//		                    0x35, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+//		                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+//		                    0x00, 0x00, 0x00, 0x2D, 0x2D, 0x00, 0x00, 0x00, 0x00, 0x00,
+//		                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+//		                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+//		                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+//		     HAL_UART_Transmit(&huart1,test,sizeof(test),100);
+//         STMFLASH_Write(FLASH_SAVE_ADDR,(u16*)test,sizeof(test)/2); //u16长度为u8数组一半
+//				}
+//			}
+//		}
+//}
+
+void port_polling()
+{
+   switch( buff[2]){
+       case 1:
+           port_buff[0] = 0x01;
+           break;
+       case 2:
+           port_buff[0] = 0x02;
+           break;
+       case 3:
+           port_buff[0] = 0x03;
+           break;
+       case 4:
+           port_buff[0] = 0x04;
+           break;
+       case 5:
+           port_buff[0] = 0x05;
+           break;
+       case 6:
+           port_buff[0] = 0x06;
+           break;
+       case 7:
+           port_buff[0] = 0x07;
+           break;
+       case 8:
+           port_buff[0] = 0x08;
+           break;
+       case 9:
+           port_buff[0] = 0x09;
+           break;
+       case 10:
+           port_buff[0] = 0x0A;
+           break;
+       case 11:
+           port_buff[0] = 0x0B;
+           break;
+       case 12:
+           port_buff[0] = 0x0C;
+           break;
+       case 13:
+           port_buff[0] = 0x0D;
+           break;
+       case 14:
+           port_buff[0] = 0x0E;
+           break;
+       case 15:
+           port_buff[0] = 0x0F;
+           break;
+       case 16:
+           port_buff[0] = 0x10;  
+           break;
+   }
+
+}
+
+
+void Uart2_TX_InitData(void)
+{
+
+    /*
+    *  SENT_IN数组，103个字节，前十个字节为包头，固定   SENT_In[0]~[9]
+    *  SENT_In[10]~[42]，33个字节为设备名称
+    *  SENT_In[43]~[75]，33个字节为附加信息
+    *  SENT_In[76]~[81]，6个字节为硬件版本
+    *  SENT_In[82]~[87]，6个字节为固件版本
+    *  SENT_In[88]~[102]，15个字节为序列号
+    */
+
+//    u8 SENT_In[103] = {0};  //总数组
+//
+//    u8 D_Name[35]= {0};      //设备名称
+//    u8 D_data[35]= {0};      //附加信息
+//    u8 Y_ED[6]={ 0x31,0x2E,0x30,0x2E,0x30,0x00 };   //硬件版本
+//    u8 G_ED[6]={ 0x31, 0x2E,0x30,0x2E,0x30,0x00 };   //固件版本
+//------------------------------------------------------------------------------------------
+//  read flash
+
+//    u8 Init_name[10]={ 0x41,0x44,0x30,0x30,0x31,0x2D,0x29,0x52,0x18,0x57};
+//    u8 Init_fdata[2]={ 0x2D,0x2D};
+		
+    u8 datatemp[FLASH_SIZE];
+    STMFLASH_Read(FLASH_SAVE_ADDR,(u16*)datatemp, sizeof(Flash_Buffer)/2);  //读取名称和附加信息
+
+    memcpy(D_Name_TX,datatemp,33);
+    memcpy(D_data_TX,datatemp+33,33);
+
+//-----------------------------------------------------------------------------------------
+    Get_SerialNum();  //获取序列号
+
+    SENT_In[0] = 0x0F;  //赋值包头
+    SENT_In[1] = 0x04;
+    SENT_In[2] = port_buff[0];
+    SENT_In[8] = 0x2A;
+    SENT_In[9] = 0x23;
+
+    memcpy(SENT_In+10,D_Name_TX,33);
+    memcpy(SENT_In+43,D_data_TX,33);
+    memcpy(SENT_In+76,Y_ED,6);
+    memcpy(SENT_In+82,G_ED,6);
+    memcpy(SENT_In+88,temp,12);   //序列号
+
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+    HAL_Delay(5);
+    HAL_UART_Transmit(&huart2, SENT_In,sizeof(SENT_In),100);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+
+    HAL_UART_Transmit(&huart1, SENT_In,sizeof(SENT_In),100);
+}
+
+
+
+
+void Debug_Name(void)
+{
+    int i=0;
+    for(i=0; i<66; i++)
+    {
+        while(U1_GetChar(&Flash_Buffer[i])!=1);  //   Flash_Buffer[0]~[65]
+    }
+    STMFLASH_Write(FLASH_SAVE_ADDR,(u16*)Flash_Buffer,FLASH_SIZE/2);    //写Flash，每次都写名称和附加信息
+    HAL_Delay(500);
+//	  HAL_UART_Transmit(&huart1,Flash_Buffer,sizeof(Flash_Buffer),100);  // 修改成功，返回名称信息
+
+    Uart2_TX_InitData();
+    memset(Flash_Buffer,0,sizeof(Flash_Buffer));
+}
+
+void Set_Name(void)
+{
+    int i=0;
+    for(i=0; i<66; i++)
+    {
+        while(U2_GetChar(&Flash_Buffer[i])!=1);  //   Flash_Buffer[0]~[65]
+    }
+    
+    HAL_Delay(500);
+    STMFLASH_Write(FLASH_SAVE_ADDR,(u16*)Flash_Buffer,sizeof(Flash_Buffer)/2);    //写Flash，每次都写名称和附加信息
+    HAL_Delay(500);
+   // STMFLASH_Write(FLASH_SAVE_ADDR,(u16*)Flash_Buffer,sizeof(Flash_Buffer)/2); 
+    
+	HAL_UART_Transmit(&huart1,Flash_Buffer,sizeof(Flash_Buffer),100);  // 修改成功，返回名称信息
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+    HAL_Delay(5);
+    HAL_UART_Transmit(&huart2,Flash_Buffer,sizeof(Flash_Buffer),100);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+    memset(Flash_Buffer,0,sizeof(Flash_Buffer));
+    Uart2_TX_InitData();
+}
+
+void Uart1_RX(void)
+{
+    int j=0;
+
+    if(USART1_fifo.Read != USART1_fifo.Write)  //如果读取指针不等于写入指针，说明缓冲区有数据，接受到KVM信息，进行判断
+    {
+        while (U1_GetChar(&buff[0])!= 1){
+         #ifdef IWDG_ON   
+            IWDG_Feed();  
+            #endif  
+        }
+        if(buff[0]>=0x01 && buff[0]<=0x09 )
+        {
+            for(j=1; j<10; j++)    //buff[0]~[9],判断指令
+            {
+                while (U1_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            if( buff[8]==0x2A && buff[9]==0x23)
+            {
+                memcpy(RX_HID,buff,10);
+                DataParse();
+                HAL_UART_Transmit(&huart1,RX_HID,sizeof(RX_HID),100);
+            }
+            memset(RX_HID,0,sizeof(RX_HID));
+            memset(buff,0,sizeof(buff));
+        }
+        else if(buff[0]==0x0F)
+        {
+            for(j=1; j<10; j++)    //buff[0]~[9],判断指令
+            {
+                while (U1_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            if(buff[1]==0x05 && buff[8]==0x2A && buff[9]==0x23)
+            {
+                Debug_Name();
+            }
+            memset(buff,0,sizeof(buff));
+        }
+        else if(buff[0]==0xF4)
+        {
+             for(j=1; j<10; j++)    //buff[0]~[9],判断指令
+            {
+                while (U1_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            if(buff[1]==0x07 && buff[8]==0x2A && buff[9]==0x23)
+            {
+                port_polling();
+                Uart2_TX_InitData();
+            }
+            memset(buff,0,sizeof(buff));
+        }
+        else if(buff[0]==0x0A)
+        {
+             for(j=1; j<10; j++)    //buff[0]~[9],判断指令
+            {
+                while (U1_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            memset(buff,0 ,10);
+        }
+        
+   }
+//	 FIFO_Init(&USART1_fifo);
+}
+
+void Uart2_RX(void)
+{
+    int j=0;
+
+    if(USART2_fifo.Read != USART2_fifo.Write)  //如果读取指针不等于写入指针，说明缓冲区有数据，接受到KVM信息，进行判断
+    {
+        while (U2_GetChar(&buff[0])!= 1){
+            #ifdef IWDG_ON   
+            IWDG_Feed();  
+            #endif  
+        }
+        if(buff[0]>=0x01 && buff[0]<=0x09 )
+        {
+            for(j=1; j<10; j++)    //buff[1]~[9],判断指令
+            {
+                while (U2_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            if( buff[8]==0x2A && buff[9]==0x23)
+            {
+                memcpy(RX_HID,buff,10);
+                DataParse();
+//--------------------------------------------------------------------------------------
+//                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+//                HAL_Delay(1);
+//                HAL_UART_Transmit(&huart2,RX_HID,sizeof(RX_HID),100);
+//                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+//                 HAL_UART_Transmit(&huart1,RX_HID,sizeof(RX_HID),100);
+//--------------------------------------------------------------------------------------
+            }
+            memset(RX_HID,0,sizeof(RX_HID));
+            memset(buff,0,sizeof(buff));
+        }
+        else if(buff[0]==0x0F)
+        {
+            for(j=1; j<10; j++)    //buff[1]~[9],判断指令
+            {
+                while (U2_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            if(buff[1]==0x05 && buff[8]==0x2A && buff[9]==0x23)
+            {
+                Set_Name();
+            }
+            memset(buff,0,sizeof(buff));
+        }
+        else if(buff[0]==0xF4)
+        {
+             for(j=1; j<10; j++)    //buff[0]~[9],判断指令
+            {
+                while (U2_GetChar(&buff[j])!= 1); //读取不成功循环读取
+            }
+            if(buff[1]==0x07 && buff[8]==0x2A && buff[9]==0x23)
+            {
+                port_polling();
+                HAL_Delay(50);
+                Uart2_TX_InitData();
+            }
+            
+            memset(buff,0,sizeof(buff));
+        }
+    }
+//	 FIFO_Init(&USART2_fifo);
+}
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+//按键初始化函数
+void ID_IO_Init(void)
+{
+    GPIO_InitTypeDef GPIO_Initure;
+    
+    __HAL_RCC_GPIOB_CLK_ENABLE();           //开启GPIOA时钟
+   
+    GPIO_Initure.Pin=GPIO_PIN_11;            //PA0
+    GPIO_Initure.Mode=GPIO_MODE_INPUT;      //输入
+    GPIO_Initure.Pull=GPIO_PULLUP;        //上拉
+    GPIO_Initure.Speed=GPIO_SPEED_FREQ_HIGH;     //高速
+    HAL_GPIO_Init(GPIOB,&GPIO_Initure);  
+    
+}
+
+// 芯片自加密
+void FLashProtectCheck(void)
+{
+    FLASH_OBProgramInitTypeDef OBInit;
+    
+    HAL_FLASH_Unlock();     // 解锁
+    HAL_FLASH_OB_Unlock();
+    
+   HAL_FLASHEx_OBGetConfig( &OBInit );
+    if( OBInit.RDPLevel !=  OB_RDP_LEVEL_1 )
+    {
+        OBInit.OptionType = OPTIONBYTE_RDP;
+        OBInit.RDPLevel = OB_RDP_LEVEL_1;
+        HAL_FLASHEx_OBProgram( &OBInit );
+    }
+    
+    HAL_FLASH_OB_Lock();
+    HAL_FLASH_Lock(); // 上锁
+}
+   int seconed_cnt=0;
+
+
+
+int main(void)
+{
+   
+    
+    HAL_Init();
+
+    SystemClock_Config();//时钟需要根据所使用的模块配置 如看门狗，usb等
+    
+    
+//    MX_USBRESET(); //IBM服务器这句话不加  不能复位  否则可能导致usb不成功 在ubantu上 开启这句话会导致键鼠卡死
+    
+    
+    MX_GPIO_Init();                 //RS485初始化，默认接受态
+    MX_USB_DEVICE_Init();
+    
+    MX_TIM1_Init();
+    
+    uart1_init(921600);					//初始化串口  stm32最高支持  450000
+    uart2_init(921600);
+     
+#ifdef IWDG_ON   
+    IWDG_Init(IWDG_PRESCALER_64,1000);  	//分频数为64,重载值为100,溢出时间为2s 这个值不会很精确
+    IWDG_Feed();
+
+#endif
+    /***********程序读保护部分**********************/
+//   FLashProtectCheck();//开启读保护
+   /***********程序读保护部分**********************/
+    
+    /***********ID加密部分***********************************************/
+//    ID_IO_Init();     
+//    if(HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_11)==0)//第一次上电  PB11接地  
+//    {
+//			
+//			STMFLASH_Write(FLASH_SAVE_ADDR,(u16*)Flash_InitBuffer,sizeof(Flash_InitBuffer)/2); 
+//      STM32_Encrypted_ID();
+//    }
+//     
+//    STM32_CMP_Encrypted_ID();//比对从flash读取的id和本身id是否一致
+   /***********ID加密部分***********************************************/
+	 
+ 
+		
+		/***********初始化模块信息，第一次上电执行*****************************/
+		u8 Init_flag[2];
+		u8 Init_data[2] = {0x14,0x14};
+		STMFLASH_Read(FLASH_FLAG_ADDR, (u16*)Init_flag, 2);  //读取标志位
+		
+//        printf("Init_flag[0]=%x , Init_flag[1]=%x" ,Init_flag[0],Init_flag[1]);
+		
+		if( Init_flag[0] != 0x14 && Init_flag[1] != 0x14)
+		{
+			STMFLASH_Write(FLASH_SAVE_ADDR,(u16*)Flash_InitBuffer,sizeof(Flash_InitBuffer)/2); 
+            #ifdef IWDG_ON   
+            IWDG_Feed();  
+            #endif
+			HAL_Delay(500);
+			STMFLASH_Write(FLASH_FLAG_ADDR, (u16*)Init_data, 2); 
+            #ifdef IWDG_ON   
+            IWDG_Feed();  
+            #endif  
+            HAL_Delay(500);            
+
+		}
+			/***********初始化模块信息，第一次上电执行*****************************/
+		
+		
+	Uart2_TX_InitData();
+        
+   
+//    HAL_TIM_Base_Start_IT(&htim1);不开启  开启会导致ubantu键鼠卡死  
+		
+    while (1)
+    {
+        Uart1_RX();
+        Uart2_RX();
+        #ifdef IWDG_ON   
+            IWDG_Feed();  //喂狗
+            #endif  			
+        
+       
+        if(seconed_cnt>=40)//40s发送一个空格符  用于保持屏幕不要息屏
+        {
+            seconed_cnt=0;
+            keyboard_send(0,0x2c,0,0,0,0,0);//40s
+        }
+ 
+
+        
+//        rel_mouse_send(0x00,0x10,0x10,0x00);      
+//        HAL_Delay(1000);      
+//        keyboard_send(0x00,0x04,0x00,0x00,0x00,0x00,0x00);
+//         HAL_Delay(1000);
+    }
+}
+
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+    /** Initializes the CPU, AHB and APB busses clocks
+    */
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_HSE;//开启独立看门狗需要开启这个时钟LSI
+    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.LSIState = RCC_LSI_ON;//开启独立看门狗需要开启这个时钟
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    /** Initializes the CPU, AHB and APB busses clocks
+    */
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                                  |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+    PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/* USER CODE BEGIN 4 */
+
+
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 7199;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 9999;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+
+//回调函数，定时器中断服务函数调用
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+   
+     if(htim==(&htim1))
+    { 
+        seconed_cnt++;
+        IWDG_Feed(); 
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);        //LED1反转
+    }
+  
+}
+
+
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+    /* USER CODE BEGIN Error_Handler_Debug */
+    /* User can add his own implementation to report the HAL error return state */
+
+    /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+    /* USER CODE BEGIN 6 */
+    /* User can add his own implementation to report the file name and line number,
+       tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+    /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
+
+/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
+
