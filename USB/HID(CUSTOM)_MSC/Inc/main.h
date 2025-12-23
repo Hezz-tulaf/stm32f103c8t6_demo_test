@@ -52,8 +52,7 @@ extern "C" {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
-void rel_mouse_send(uint8_t buttons, int8_t x, int8_t y, int8_t wheel);
-void keyboard_send(int8_t key_sp,int8_t key1,int8_t key2,int8_t key3,int8_t key4,int8_t key5,int8_t key6);
+
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */

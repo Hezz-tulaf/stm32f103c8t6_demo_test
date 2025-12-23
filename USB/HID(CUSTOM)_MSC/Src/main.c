@@ -29,66 +29,8 @@
 #include "delay.h"
 #include "keyboard_mouse_uart.h"
 
-
-
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
-
-extern USBD_HandleTypeDef hUsbDeviceFS;
-
-/* 简单相对鼠标操作 */
-typedef struct {
-    uint8_t buttons;  // 按钮状态
-    int8_t  x;        // X轴移动 (-127~127)
-    int8_t  y;        // Y轴移动 (-127~127)
-    int8_t  wheel;    // 滚轮 (-127~127)
-} mouse_report_t;
-
-void rel_mouse_send(uint8_t buttons, int8_t x, int8_t y, int8_t wheel) //x为左右   y为上下
-{
-    mouse_report_t report;
-    report.buttons = buttons;
-    report.x = x;
-    report.y = y;
-    report.wheel = wheel;
-
-    USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, (uint8_t*)&report, sizeof(report),2);
-}
-
-/* 简单键盘操作 */
-typedef struct {
-    uint8_t modifier;   // 修饰键 (BYTE0)
-    uint8_t reserved;   // 保留 (BYTE1)
-    uint8_t keycode[6]; // 按键码 (BYTE2-BYTE7)
-} keyboard_report_t;
-
-void keyboard_reset()
-{
-    keyboard_report_t report = {0};
-    while(USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, (uint8_t*)&report, 8, 1)!= USBD_OK);
-}
-
-void keyboard_send(int8_t key_sp,int8_t key1,int8_t key2,int8_t key3,int8_t key4,int8_t key5,int8_t key6)
-{
-    keyboard_report_t report;
-
-    report.modifier = key_sp;
-    report.reserved = 0;
-    report.keycode[0] = key1;
-    report.keycode[1] = key2;
-    report.keycode[2] = key3;
-    report.keycode[3] = key4;
-    report.keycode[4] = key5;
-    report.keycode[5] = key6;
-
-    while(USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, (uint8_t*)&report, 8, 1)!= USBD_OK);
-
-    HAL_Delay(2);  //延时是必要的
-    keyboard_reset(); //发送0  表示键盘弹起 否则一直相应之前的键值
-    HAL_Delay(2);
-}
-
 
 int main(void)
 {
@@ -106,10 +48,10 @@ int main(void)
     {
 		parse_and_execute_command();
 		HAL_Delay(1000);
-		rel_mouse_send(0,10,10,0);
+		//rel_mouse_send(0x00,0x10,0x10,0x00);	//直接测试鼠标移动
+		//keyboard_send(0x00,0x04,0x00,0x00,0x00,0x00,0x00);//直接键盘测试发送字母a
     }
 }
-
 
 /**
   * @brief System Clock Configuration
