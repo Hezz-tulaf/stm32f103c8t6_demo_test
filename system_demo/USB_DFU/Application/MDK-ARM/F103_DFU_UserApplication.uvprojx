@@ -7,7 +7,7 @@
 
   <Targets>
     <Target>
-      <TargetName>F103_DFU_UserApplication</TargetName>
+      <TargetName>Application</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
       <pCCUsed>5060422::V5.06 update 4 (build 422)::ARMCC</pCCUsed>
@@ -47,8 +47,8 @@
             <NotGenerated>0</NotGenerated>
             <InvalidFlash>1</InvalidFlash>
           </TargetStatus>
-          <OutputDirectory>F103_DFU_UserApplication\</OutputDirectory>
-          <OutputName>F103_DFU_UserApplication</OutputName>
+          <OutputDirectory>.\Application\</OutputDirectory>
+          <OutputName>Application</OutputName>
           <CreateExecutable>1</CreateExecutable>
           <CreateLib>0</CreateLib>
           <CreateHexFile>1</CreateHexFile>
@@ -81,7 +81,7 @@
           <AfterMake>
             <RunUserProg1>1</RunUserProg1>
             <RunUserProg2>0</RunUserProg2>
-            <UserProg1Name>D:\Program Files (x86)\Keil_v5\ARM\ARMCLANG\bin\fromelf.exe --bin -o  ./Bin/UserApplication.bin ./F103_DFU_UserApplication/F103_DFU_UserApplication.axf</UserProg1Name>
+            <UserProg1Name>D:\Program Files (x86)\Keil_v5\ARM\ARMCLANG\bin\fromelf.exe --bin -o  ./Bin/Application.bin ./Application/Application.axf</UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
             <UserProg2Dos16Mode>0</UserProg2Dos16Mode>
@@ -504,7 +504,7 @@
       <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="4.3.0" condition="CMSIS Core">
         <package name="CMSIS" schemaVersion="1.3" url="http://www.keil.com/pack/" vendor="ARM" version="4.5.0"/>
         <targetInfos>
-          <targetInfo name="F103_DFU_UserApplication"/>
+          <targetInfo name="Application"/>
         </targetInfos>
       </component>
     </components>
